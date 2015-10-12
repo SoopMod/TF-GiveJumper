@@ -8,7 +8,7 @@
 
 #pragma newdecls required
 
-#define PLUGIN_VERSION          "0.0.2"
+#define PLUGIN_VERSION          "0.1.0"
 public Plugin myinfo = {
     name = "[TF2] Auto-give Rocket Jumper",
     author = "nosoop",
@@ -20,10 +20,17 @@ public Plugin myinfo = {
 #define ROCKETJUMPER_DEFINDEX	237
 #define ROCKETJUMPER_CLASSNAME	"tf_weapon_rocketlauncher"
 
+// Determines whether or not Rocket Jumpers are enabled.
+// This cannot be changed while the map is running, because it's a pain to hook / unhook everything.
+Handle g_hConVarJumperEnabled = null;
+bool g_bJumperEnabled = false;
+
 bool g_ClientUsingJumperOverride[MAXPLAYERS+1];
 float g_ClientLastResupplyTime[MAXPLAYERS+1];
 
 public void OnPluginStart() {
+	g_hConVarJumperEnabled = CreateConVar("sm_grantjumper_enabled", "0", "Determine whether granting of Rocket Jumpers can be used.", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_DONTRECORD, true, 0.0, true, 1.0);
+
 	HookEvent("post_inventory_application", Event_PlayerInventoryApplication_Post, EventHookMode_Post);
 	RegConsoleCmd("sm_togglejumper", AdminCmd_ToggleJumper, "Toggles auto-granting of Rocket Jumpers on a player.");
 	
@@ -34,12 +41,32 @@ public void OnPluginStart() {
 	LoadTranslations("core.phrases");
 }
 
-public void OnMapStart() {
-	SetRegeneratorState(false);
+public void OnConfigsExecuted() {
+	g_bJumperEnabled = GetConVarBool(g_hConVarJumperEnabled);
+	
+	if (g_bJumperEnabled) {
+		LogMessage("Automatic granting of Rocket Jumpers enabled.");
+		DisableResuppliesOnNextFrameIfDesirable();
+	}
 }
 
-public void OnPluginEnd() {
-	SetRegeneratorState(true);
+/**
+ * Disable the resupplies once the server's running.  Or something.
+ * Probably a really dumb hack, but fuck if I know how the resupplies are enabled.
+ *
+ * (TODO test DispatchKeyValue(entity, "StartDisabled", "1"))
+ */
+public void TF2_OnWaitingForPlayersStart() { DisableResuppliesOnNextFrameIfDesirable(); }
+public void TF2_OnWaitingForPlayersEnd() { DisableResuppliesOnNextFrameIfDesirable(); }
+
+void DisableResuppliesOnNextFrameIfDesirable() {
+	if (g_bJumperEnabled) {
+		RequestFrame(RequestFrameCallback_DisableResupply);
+	}
+}
+
+public void RequestFrameCallback_DisableResupply(any data) {
+	SetRegeneratorState(false);
 }
 
 void SetRegeneratorState(bool bEnabled) {
@@ -50,7 +77,9 @@ void SetRegeneratorState(bool bEnabled) {
 }
 
 public Action AdminCmd_ToggleJumper(int client, int nArgs) {
-	if (!CheckCommandAccess(client, "jumper", ADMFLAG_CHEATS)) {
+	if (!g_bJumperEnabled) {
+		return Plugin_Handled;
+	} else if (!CheckCommandAccess(client, "jumper", ADMFLAG_CHEATS)) {
 		ReplyToCommand(client, "[SM] %t.", "No Access");
 		return Plugin_Handled;
 	}
@@ -68,7 +97,7 @@ public Action AdminCmd_ToggleJumper(int client, int nArgs) {
 public void OnClientPutInServer(int client) {
 	g_ClientUsingJumperOverride[client] = false;
 	
-	if (IsClientInGame(client)) {
+	if (g_bJumperEnabled && IsClientInGame(client)) {
 		SDKHook(client, SDKHook_Touch, SDKHookCB_OnResupplyTouch);
 	}
 }
@@ -77,35 +106,30 @@ public void OnClientPutInServer(int client) {
  * Replace resupply handling with own implementation.
  */
 public void SDKHookCB_OnResupplyTouch(int client, int other) {
-	if (!g_ClientUsingJumperOverride[client]) {
-		char entityName[64];
-		
-		// How slow is GetEntityClassname?  Maybe store a list of func_regenerate entities instead
-		GetEntityClassname(other, entityName, sizeof(entityName));
-		
-		if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+	// How slow is GetEntityClassname?  Maybe store a list of func_regenerate entities instead
+	char entityName[64];
+	GetEntityClassname(other, entityName, sizeof(entityName));
+	if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+		if (!g_ClientUsingJumperOverride[client]) {
 			TF2_RegeneratePlayer(client);
-			g_ClientLastResupplyTime[client] = GetGameTime();
-		}
-	} else {
-		char entityName[64];
-		
-		GetEntityClassname(other, entityName, sizeof(entityName));
-		
-		if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+		} else {
+			// TODO iterate over weapons and refill clips that way
 			int hActiveWeapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
 			GivePlayerAmmo(client, 99, GetEntProp(hActiveWeapon, Prop_Data, "m_iPrimaryAmmoType"), true);
 			
-			g_ClientLastResupplyTime[client] = GetGameTime();
+			// Refill clip for Rocket Jumper.  Hopefully.
+			SetEntProp(GetPlayerWeaponSlot(client, 0), Prop_Data, "m_iClip1", 4);
 		}
+		g_ClientLastResupplyTime[client] = GetGameTime();
 	}
 }
 
 public void Event_PlayerInventoryApplication_Post(Event event, const char[] name, bool dontBroadcast) {
-	int client = GetClientOfUserId(event.GetInt("userid"));
-	
-	if (g_ClientUsingJumperOverride[client]) {
-		ReplacePrimaryWithJumper(client);
+	if (g_bJumperEnabled) {
+		int client = GetClientOfUserId(event.GetInt("userid"));
+		if (g_ClientUsingJumperOverride[client]) {
+			ReplacePrimaryWithJumper(client);
+		}
 	}
 }
 
