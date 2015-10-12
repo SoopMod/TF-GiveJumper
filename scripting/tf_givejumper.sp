@@ -8,7 +8,7 @@
 
 #pragma newdecls required
 
-#define PLUGIN_VERSION          "0.1.0"
+#define PLUGIN_VERSION          "0.1.1"
 public Plugin myinfo = {
     name = "[TF2] Auto-give Rocket Jumper",
     author = "nosoop",
@@ -19,6 +19,7 @@ public Plugin myinfo = {
 
 #define ROCKETJUMPER_DEFINDEX	237
 #define ROCKETJUMPER_CLASSNAME	"tf_weapon_rocketlauncher"
+#define RESUPPLY_INTERIM_TIME	5.0
 
 // Determines whether or not Rocket Jumpers are enabled.
 // This cannot be changed while the map is running, because it's a pain to hook / unhook everything.
@@ -109,7 +110,7 @@ public void SDKHookCB_OnResupplyTouch(int client, int other) {
 	// How slow is GetEntityClassname?  Maybe store a list of func_regenerate entities instead
 	char entityName[64];
 	GetEntityClassname(other, entityName, sizeof(entityName));
-	if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+	if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + RESUPPLY_INTERIM_TIME) {
 		if (!g_ClientUsingJumperOverride[client]) {
 			TF2_RegeneratePlayer(client);
 		} else {
