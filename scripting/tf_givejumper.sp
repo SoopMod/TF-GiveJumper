@@ -3,11 +3,12 @@
 #include <sourcemod>
 #include <tf2_stocks>
 #include <tf2items>
+#include <sdkhooks>
 #include <sdktools>
 
 #pragma newdecls required
 
-#define PLUGIN_VERSION          "0.0.1"
+#define PLUGIN_VERSION          "0.0.2"
 public Plugin myinfo = {
     name = "[TF2] Auto-give Rocket Jumper",
     author = "nosoop",
@@ -20,12 +21,32 @@ public Plugin myinfo = {
 #define ROCKETJUMPER_CLASSNAME	"tf_weapon_rocketlauncher"
 
 bool g_ClientUsingJumperOverride[MAXPLAYERS+1];
+float g_ClientLastResupplyTime[MAXPLAYERS+1];
 
 public void OnPluginStart() {
 	HookEvent("post_inventory_application", Event_PlayerInventoryApplication_Post, EventHookMode_Post);
 	RegConsoleCmd("sm_togglejumper", AdminCmd_ToggleJumper, "Toggles auto-granting of Rocket Jumpers on a player.");
 	
+	for (int i = MaxClients; i > 0; --i) {
+		OnClientPutInServer(i);
+	}
+	
 	LoadTranslations("core.phrases");
+}
+
+public void OnMapStart() {
+	SetRegeneratorState(false);
+}
+
+public void OnPluginEnd() {
+	SetRegeneratorState(true);
+}
+
+void SetRegeneratorState(bool bEnabled) {
+	int regeneratorFuncs = -1;
+	while ((regeneratorFuncs = FindEntityByClassname(regeneratorFuncs, "func_regenerate")) != -1) {
+		AcceptEntityInput(regeneratorFuncs, bEnabled ? "Enable" : "Disable");
+	}
 }
 
 public Action AdminCmd_ToggleJumper(int client, int nArgs) {
@@ -37,11 +58,47 @@ public Action AdminCmd_ToggleJumper(int client, int nArgs) {
 	g_ClientUsingJumperOverride[client] = !g_ClientUsingJumperOverride[client];
 	PrintToChat(client, "Jumper mode %s", g_ClientUsingJumperOverride[client] ? "enabled" : "disabled");
 	
+	if (g_ClientUsingJumperOverride[client]) {
+		ReplacePrimaryWithJumper(client);
+	}
+	
 	return Plugin_Handled;
 }
 
 public void OnClientPutInServer(int client) {
 	g_ClientUsingJumperOverride[client] = false;
+	
+	if (IsClientInGame(client)) {
+		SDKHook(client, SDKHook_Touch, SDKHookCB_OnResupplyTouch);
+	}
+}
+
+/**
+ * Replace resupply handling with own implementation.
+ */
+public void SDKHookCB_OnResupplyTouch(int client, int other) {
+	if (!g_ClientUsingJumperOverride[client]) {
+		char entityName[64];
+		
+		// How slow is GetEntityClassname?  Maybe store a list of func_regenerate entities instead
+		GetEntityClassname(other, entityName, sizeof(entityName));
+		
+		if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+			TF2_RegeneratePlayer(client);
+			g_ClientLastResupplyTime[client] = GetGameTime();
+		}
+	} else {
+		char entityName[64];
+		
+		GetEntityClassname(other, entityName, sizeof(entityName));
+		
+		if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + 5.0) {
+			int hActiveWeapon = GetEntPropEnt(client, Prop_Send, "m_hActiveWeapon");
+			GivePlayerAmmo(client, 99, GetEntProp(hActiveWeapon, Prop_Data, "m_iPrimaryAmmoType"), true);
+			
+			g_ClientLastResupplyTime[client] = GetGameTime();
+		}
+	}
 }
 
 public void Event_PlayerInventoryApplication_Post(Event event, const char[] name, bool dontBroadcast) {
