@@ -8,7 +8,7 @@
 
 #pragma newdecls required
 
-#define PLUGIN_VERSION          "0.1.1"
+#define PLUGIN_VERSION          "0.2.0"
 public Plugin myinfo = {
     name = "[TF2] Auto-give Rocket Jumper",
     author = "nosoop",
@@ -19,18 +19,23 @@ public Plugin myinfo = {
 
 #define ROCKETJUMPER_DEFINDEX	237
 #define ROCKETJUMPER_CLASSNAME	"tf_weapon_rocketlauncher"
-#define RESUPPLY_INTERIM_TIME	5.0
+#define RESUPPLY_INTERIM_TIME	4.0
 
 // Determines whether or not Rocket Jumpers are enabled.
 // This cannot be changed while the map is running, because it's a pain to hook / unhook everything.
 Handle g_hConVarJumperEnabled = null;
 bool g_bJumperEnabled = false;
 
+// Determines whether we remove map resupplies and give heals to everyone instead.
+Handle g_hConVarOverrideGlobalResupplies = null;
+bool g_bOverrideGlobalResupplies = false;
+
 bool g_ClientUsingJumperOverride[MAXPLAYERS+1];
 float g_ClientLastResupplyTime[MAXPLAYERS+1];
 
 public void OnPluginStart() {
 	g_hConVarJumperEnabled = CreateConVar("sm_grantjumper_enabled", "0", "Determine whether granting of Rocket Jumpers can be used.", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_DONTRECORD, true, 0.0, true, 1.0);
+	g_hConVarOverrideGlobalResupplies = CreateConVar("sm_grantjumper_global_resupply", "1", "If enabled, will remove the maps' resupply entities and apply this plugin's resupply implementation on all players.", FCVAR_PLUGIN | FCVAR_SPONLY | FCVAR_DONTRECORD, true, 0.0, true, 1.0);
 
 	HookEvent("post_inventory_application", Event_PlayerInventoryApplication_Post, EventHookMode_Post);
 	RegConsoleCmd("sm_togglejumper", AdminCmd_ToggleJumper, "Toggles auto-granting of Rocket Jumpers on a player.");
@@ -44,6 +49,7 @@ public void OnPluginStart() {
 
 public void OnConfigsExecuted() {
 	g_bJumperEnabled = GetConVarBool(g_hConVarJumperEnabled);
+	g_bOverrideGlobalResupplies = GetConVarBool(g_hConVarOverrideGlobalResupplies);
 	
 	if (g_bJumperEnabled) {
 		LogMessage("Automatic granting of Rocket Jumpers enabled.");
@@ -71,9 +77,17 @@ public void RequestFrameCallback_DisableResupply(any data) {
 }
 
 void SetRegeneratorState(bool bEnabled) {
+	if (g_bOverrideGlobalResupplies && !bEnabled) {
+		LogMessage("Removing all func_regenerate entities.");
+	}
+
 	int regeneratorFuncs = -1;
 	while ((regeneratorFuncs = FindEntityByClassname(regeneratorFuncs, "func_regenerate")) != -1) {
-		AcceptEntityInput(regeneratorFuncs, bEnabled ? "Enable" : "Disable");
+		if (g_bOverrideGlobalResupplies && !bEnabled) {
+			AcceptEntityInput(regeneratorFuncs, "Kill");
+		} else {
+			AcceptEntityInput(regeneratorFuncs, bEnabled ? "Enable" : "Disable");
+		}
 	}
 }
 
@@ -98,7 +112,7 @@ public Action AdminCmd_ToggleJumper(int client, int nArgs) {
 public void OnClientPutInServer(int client) {
 	g_ClientUsingJumperOverride[client] = false;
 	
-	if (g_bJumperEnabled && IsClientInGame(client)) {
+	if (g_bJumperEnabled && !g_bOverrideGlobalResupplies && IsClientInGame(client)) {
 		SDKHook(client, SDKHook_Touch, SDKHookCB_OnResupplyTouch);
 	}
 }
@@ -107,10 +121,17 @@ public void OnClientPutInServer(int client) {
  * Replace resupply handling with own implementation.
  */
 public void SDKHookCB_OnResupplyTouch(int client, int other) {
+	// We should never reach this if jumper mode is disabled.
 	// How slow is GetEntityClassname?  Maybe store a list of func_regenerate entities instead
 	char entityName[64];
 	GetEntityClassname(other, entityName, sizeof(entityName));
-	if (StrEqual(entityName, "func_regenerate") && GetGameTime() > g_ClientLastResupplyTime[client] + RESUPPLY_INTERIM_TIME) {
+	if (StrEqual(entityName, "func_regenerate")) {
+		AttemptToProvideResupply(client);
+	}
+}
+
+void AttemptToProvideResupply(int client) {
+	if (GetGameTime() > g_ClientLastResupplyTime[client] + RESUPPLY_INTERIM_TIME) {
 		if (!g_ClientUsingJumperOverride[client]) {
 			TF2_RegeneratePlayer(client);
 		} else {
@@ -122,6 +143,12 @@ public void SDKHookCB_OnResupplyTouch(int client, int other) {
 			SetEntProp(GetPlayerWeaponSlot(client, 0), Prop_Data, "m_iClip1", 4);
 		}
 		g_ClientLastResupplyTime[client] = GetGameTime();
+	}
+}
+
+public Action OnPlayerRunCmd(int client) {
+	if (g_bJumperEnabled && g_bOverrideGlobalResupplies) {
+		AttemptToProvideResupply(client);
 	}
 }
 
